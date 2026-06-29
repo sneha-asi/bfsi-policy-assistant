@@ -1,20 +1,19 @@
-// Vercel serverless function: optional GLM (open-model) generation layer.
+// Vercel serverless function: Claude (Anthropic) grounded generation layer.
 //
-// Calls any OpenAI-compatible chat endpoint, so it works with a hosted GLM:
-//   LLM_BASE_URL = https://openrouter.ai/api/v1
-//   LLM_MODEL    = z-ai/glm-4.6        (any GLM variant the provider exposes)
-//   LLM_API_KEY  = <provider key>
+// Calls the Anthropic Messages API:
+//   ANTHROPIC_API_KEY = sk-ant-...        (required to enable written answers)
+//   ANTHROPIC_MODEL   = claude-sonnet-4-6 (optional override)
 //
-// The browser does retrieval and sends the top policy passages here. GLM answers
+// The browser does retrieval and sends the top policy passages here. Claude answers
 // using ONLY those passages, cites them, and REFUSES when they don't actually
 // answer - the grounding judgment a bi-encoder can't make.
 //
-// If LLM_API_KEY is not configured, GET reports disabled and the frontend stays in
-// extractive mode, so the site works with zero secrets.
+// If ANTHROPIC_API_KEY is not configured, GET reports disabled and the frontend
+// stays in extractive / in-browser mode, so the site works with zero secrets.
 
+const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
 const REFUSAL = "I couldn't find that in the policy documents.";
-const BASE_URL = (process.env.LLM_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/$/, '');
-const MODEL = process.env.LLM_MODEL || 'z-ai/glm-4.6';
 
 const SYSTEM = `You are a warm, helpful policy advisor at a bank/insurance company, like a \
 knowledgeable support agent speaking to a customer. Answer in plain, friendly, natural \
@@ -33,13 +32,13 @@ Hard rules:
 customer confirm with support. Never invent policy terms or numbers.`;
 
 export default async function handler(req, res) {
-  const key = process.env.LLM_API_KEY;
+  const key = process.env.ANTHROPIC_API_KEY;
 
   if (req.method === 'GET') {
     return res.status(200).json({ enabled: !!key, model: key ? MODEL : null });
   }
   if (req.method !== 'POST') return res.status(405).json({ error: 'method not allowed' });
-  if (!key) return res.status(501).json({ error: 'LLM_API_KEY not configured' });
+  if (!key) return res.status(501).json({ error: 'ANTHROPIC_API_KEY not configured' });
 
   try {
     const { question, contexts } = req.body || {};
@@ -51,27 +50,31 @@ export default async function handler(req, res) {
       return `[${i + 1}] (Source: ${c.doc_title}, ${pages})\n${c.text}`;
     }).join('\n\n');
 
-    const r = await fetch(`${BASE_URL}/chat/completions`, {
+    const r = await fetch(ANTHROPIC_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+      },
       body: JSON.stringify({
         model: MODEL,
-        temperature: 0,
         max_tokens: 1024,
+        temperature: 0,
+        system: SYSTEM,
         messages: [
-          { role: 'system', content: SYSTEM },
           { role: 'user', content: `Policy excerpts:\n\n${blocks}\n\n---\nQuestion: ${question}` },
         ],
       }),
     });
     if (!r.ok) {
       const detail = await r.text();
-      return res.status(502).json({ error: `LLM provider ${r.status}`, detail: detail.slice(0, 300) });
+      return res.status(502).json({ error: `Claude ${r.status}`, detail: detail.slice(0, 300) });
     }
     const data = await r.json();
-    const text = (data?.choices?.[0]?.message?.content || '').trim();
+    const text = (data?.content?.[0]?.text || '').trim();
     if (!text || text === REFUSAL) return res.status(200).json({ answer: REFUSAL, mode: 'abstained' });
-    return res.status(200).json({ answer: text, mode: 'glm' });
+    return res.status(200).json({ answer: text, mode: 'claude' });
   } catch (e) {
     return res.status(500).json({ error: String(e?.message || e) });
   }

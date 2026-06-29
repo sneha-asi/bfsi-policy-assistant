@@ -37,8 +37,7 @@ excerpts do not answer it, say so politely.`;
 const ASR_MODEL = 'Xenova/whisper-tiny.en';
 
 let MAT, CHUNKS, N, BM25, extractor, META;
-let LLM_ENABLED = false;    // hosted GLM endpoint (probed at boot)
-let VOICE_ENABLED = false;  // hosted Groq Whisper endpoint (probed at boot)
+let LLM_ENABLED = false;    // hosted Claude endpoint (probed at boot)
 let WRITTEN_MODE = false;   // in-browser written answers (user toggles on)
 
 // ---------------------------------------------------------------------------
@@ -475,24 +474,16 @@ async function processFiles(files) {
 }
 
 async function probeLLM() {
-  // If a hosted GLM endpoint is configured, written answers come from there.
+  // If a hosted Claude endpoint is configured, written answers come from there.
   try {
     const r = await fetch('api/chat');
     if (r.ok) LLM_ENABLED = !!(await r.json()).enabled;
   } catch (e) { /* static-only deploy: client-side only */ }
 }
 
-async function probeVoice() {
-  // If a hosted Groq Whisper endpoint is configured, the mic uses it.
-  try {
-    const r = await fetch('api/voice');
-    if (r.ok) VOICE_ENABLED = !!(await r.json()).enabled;
-  } catch (e) { /* no voice on this deploy */ }
-}
-
 async function boot() {
   await loadIndex();
-  await Promise.all([probeLLM(), probeVoice()]);
+  await probeLLM();
   statusEl.textContent = 'loading embedding model (one-time, ~30MB)…';
   extractor = await pipeline('feature-extraction', META.model, {
     dtype: META.dtype,
@@ -503,7 +494,7 @@ async function boot() {
   });
   statusEl.textContent = '';
   q.disabled = false; send.disabled = false; uploadBtn.disabled = false;
-  if (micBtn) micBtn.disabled = !VOICE_ENABLED;  // mic only when Groq voice is on
+  if (micBtn) micBtn.disabled = false;  // voice runs in-browser; always available
   q.placeholder = 'Ask about a policy - coverage, limits, claims, fees…'; q.focus();
   // Writer toggle: if a hosted endpoint is on, answers are already written; else
   // let the user turn on in-browser generation.
@@ -551,8 +542,10 @@ document.addEventListener('drop', e => {
 });
 
 // ---------------------------------------------------------------------------
-// Voice input: record from the mic, transcribe server-side with Groq Whisper
-// (whisper-large-v3), then run the question through the normal grounded pipeline.
+// Voice input: record from the mic, transcribe with open-source Whisper
+// (Xenova/whisper-tiny.en) running entirely in the browser - no server, no key.
+// The audio is decoded to 16kHz mono PCM and handed to the worker, then the
+// transcript runs through the normal grounded pipeline.
 // ---------------------------------------------------------------------------
 const micBtn = document.getElementById('mic');
 let recording = false, mediaRecorder = null, audioChunks = [];
@@ -560,13 +553,20 @@ let recording = false, mediaRecorder = null, audioChunks = [];
 function setMic(state) {
   if (micBtn) micBtn.dataset.state = state;
 }
-function blobToBase64(blob) {                          // -> base64 string (no data: prefix)
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onerror = reject;
-    fr.onload = () => resolve(String(fr.result).split(',')[1] || '');
-    fr.readAsDataURL(blob);
-  });
+// Decode a recorded audio blob to a 16kHz mono Float32Array (what Whisper expects).
+async function decodeAudioTo16k(blob) {
+  const arrayBuf = await blob.arrayBuffer();
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AudioCtx();
+  const decoded = await ctx.decodeAudioData(arrayBuf);
+  ctx.close();
+  if (decoded.sampleRate === 16000)
+    return new Float32Array(decoded.getChannelData(0));   // standalone copy (transferable)
+  const offline = new OfflineAudioContext(1, Math.ceil(decoded.duration * 16000), 16000);
+  const src = offline.createBufferSource();
+  src.buffer = decoded; src.connect(offline.destination); src.start();
+  const rendered = await offline.startRendering();
+  return new Float32Array(rendered.getChannelData(0));
 }
 async function startRecording() {
   let stream;
@@ -577,18 +577,18 @@ async function startRecording() {
   mediaRecorder.ondataavailable = e => { if (e.data.size) audioChunks.push(e.data); };
   mediaRecorder.onstop = async () => {
     stream.getTracks().forEach(t => t.stop());
-    recording = false; setMic('transcribing'); statusEl.textContent = 'transcribing…';
+    recording = false;
     try {
+      if (!asrReady) {
+        setMic('loading'); statusEl.textContent = 'loading voice model (one-time)…';
+        await loadASR(pct => { statusEl.textContent = `loading voice model… ${pct}%`; });
+      }
+      setMic('transcribing'); statusEl.textContent = 'transcribing…';
       const mime = mediaRecorder.mimeType || 'audio/webm';
-      const audio = await blobToBase64(new Blob(audioChunks, { type: mime }));
-      const resp = await fetch('api/voice', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ audio, mime }),
-      });
-      const j = await resp.json();
+      const audio = await decodeAudioTo16k(new Blob(audioChunks, { type: mime }));
+      const text = await transcribe(audio);
       statusEl.textContent = ''; setMic('idle');
-      if (!resp.ok) { addSystem('Could not transcribe: ' + (j.error || resp.status)); return; }
-      if (j.text && j.text.trim()) { q.value = j.text.trim(); handle(j.text.trim()); }
+      if (text && text.trim()) { q.value = text.trim(); handle(text.trim()); }
       else addSystem('I did not catch that. Please try again.');
     } catch (e) { statusEl.textContent = ''; setMic('idle'); addSystem('Could not transcribe: ' + e.message); }
   };
