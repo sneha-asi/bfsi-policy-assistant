@@ -1,0 +1,9 @@
+# Local-only BFSI RAG. Use a venv (Homebrew Python is PEP-668 externally-managed).
+numpy>=1.26
+faiss-cpu>=1.8          # exact vector index (IndexFlatIP = cosine on normalized vecs)
+pymupdf>=1.24           # PDF text extraction + page rendering for OCR
+pytesseract>=0.3.10     # OCR for scanned pages (needs system `tesseract`)
+pillow>=10.0
+faster-whisper>=1.0     # local voice transcription (needs system `ffmpeg`)
+ollama>=0.3             # local embeddings (nomic-embed-text) + generation (llama3.2:3b)
+flask>=3.0              # web chat UI

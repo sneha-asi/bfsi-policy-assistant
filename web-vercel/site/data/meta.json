@@ -1,0 +1,6 @@
+{
+  "n_chunks": 27,
+  "dim": 384,
+  "model": "Xenova/bge-small-en-v1.5",
+  "dtype": "q8"
+}

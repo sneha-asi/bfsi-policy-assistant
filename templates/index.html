@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BFSI Policy Assistant</title>
+<style>
+  :root { --teal:#0f766e; --ink:#1f2937; --muted:#6b7280; --line:#e5e7eb; --bg:#f8fafc; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+         background:var(--bg); color:var(--ink); }
+  header { background:#fff; border-bottom:1px solid var(--line); padding:16px 24px; }
+  header h1 { margin:0; font-size:18px; }
+  header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+  main { max-width:760px; margin:0 auto; padding:24px 16px 120px; }
+  .msg { margin:14px 0; }
+  .you { text-align:right; }
+  .bubble { display:inline-block; padding:12px 14px; border-radius:12px; max-width:90%;
+            white-space:pre-wrap; line-height:1.5; font-size:14px; text-align:left; }
+  .you .bubble { background:var(--teal); color:#fff; }
+  .bot .bubble { background:#fff; border:1px solid var(--line); }
+  .sources { margin-top:8px; font-size:12px; color:var(--muted); }
+  .meta { font-size:11px; color:var(--muted); margin-top:4px; }
+  .refusal .bubble { background:#fff7ed; border-color:#fdba74; }
+  form { position:fixed; bottom:0; left:0; right:0; background:#fff;
+         border-top:1px solid var(--line); padding:12px; display:flex; gap:8px;
+         justify-content:center; }
+  .row { width:100%; max-width:760px; display:flex; gap:8px; }
+  input[type=text] { flex:1; padding:12px; border:1px solid var(--line); border-radius:10px;
+                     font-size:14px; }
+  button { border:0; border-radius:10px; padding:0 16px; font-size:14px; cursor:pointer;
+           background:var(--teal); color:#fff; }
+  button.mic, button.up { background:#fff; border:1px solid var(--line); color:var(--ink); width:48px; }
+  button.mic.rec { background:#dc2626; color:#fff; border-color:#dc2626; }
+  .hint { color:var(--muted); font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>BFSI Policy Assistant</h1>
+  <p>Answers strictly from the loaded policy &amp; terms documents. FAISS + Ollama + Whisper, all local.</p>
+</header>
+<main id="log">
+  <div class="msg bot"><div class="bubble">Ask me about the loaded BFSI policies and terms. For example: "What is the waiting period for pre-existing diseases?" or "How long do I have to report a fraudulent transaction?"</div></div>
+</main>
+<form id="form">
+  <div class="row">
+    <button type="button" class="up" id="up" title="Upload PDF policy/T&C documents">&#128206;</button>
+    <input type="file" id="file" accept="application/pdf" multiple hidden />
+    <button type="button" class="mic" id="mic" title="Hold-to-talk: click to start, click to stop">&#127908;</button>
+    <input type="text" id="q" placeholder="Ask about a policy or T&C..." autocomplete="off" />
+    <button type="submit">Ask</button>
+  </div>
+</form>
+<script>
+const log = document.getElementById('log');
+const form = document.getElementById('form');
+const input = document.getElementById('q');
+const mic = document.getElementById('mic');
+
+function add(text, who, extra) {
+  const wrap = document.createElement('div');
+  wrap.className = 'msg ' + who + (extra && extra.refusal ? ' refusal' : '');
+  const b = document.createElement('div');
+  b.className = 'bubble';
+  b.textContent = text;
+  wrap.appendChild(b);
+  if (extra && extra.sources && extra.sources.length) {
+    const s = document.createElement('div');
+    s.className = 'sources';
+    s.textContent = 'Sources: ' + extra.sources.map(x =>
+      `[${x.n}] ${x.title} p.${x.page}` + (x.ocr ? ' (OCR)' : '')).join('  ');
+    wrap.appendChild(s);
+  }
+  if (extra && extra.confidence !== undefined) {
+    const m = document.createElement('div');
+    m.className = 'meta';
+    m.textContent = 'confidence ' + extra.confidence;
+    wrap.appendChild(m);
+  }
+  log.appendChild(wrap);
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
+function render(res) {
+  add(res.answer, 'bot', {sources: res.sources, confidence: res.confidence, refusal: !res.grounded});
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const q = input.value.trim();
+  if (!q) return;
+  add(q, 'you');
+  input.value = '';
+  add('...', 'bot');
+  const placeholder = log.lastChild;
+  try {
+    const r = await fetch('/ask', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({question: q})});
+    const res = await r.json();
+    placeholder.remove();
+    render(res);
+  } catch (err) { placeholder.remove(); add('Error: ' + err, 'bot'); }
+});
+
+// --- upload: add PDF policy/T&C docs to the corpus at runtime ---
+const up = document.getElementById('up');
+const file = document.getElementById('file');
+up.addEventListener('click', () => file.click());
+file.addEventListener('change', async () => {
+  if (!file.files.length) return;
+  const names = Array.from(file.files).map(f => f.name).join(', ');
+  add('Uploading: ' + names, 'you');
+  add('(indexing documents...)', 'bot');
+  const ph = log.lastChild;
+  const fd = new FormData();
+  for (const f of file.files) fd.append('files', f, f.name);
+  file.value = '';
+  try {
+    const r = await fetch('/upload', {method:'POST', body: fd});
+    const res = await r.json();
+    ph.remove();
+    if (res.error) { add('Upload error: ' + res.error, 'bot'); return; }
+    const lines = res.added.map(a =>
+      `${a.title}: ${a.chunks} chunks` + (a.ocr_pages ? ` (OCR on ${a.ocr_pages} page(s))` : '')).join('\n');
+    add('Added to the corpus. You can now ask about:\n' + lines, 'bot');
+  } catch (err) { ph.remove(); add('Error: ' + err, 'bot'); }
+});
+
+// --- voice: record mic audio, POST to /voice ---
+let media, chunks = [], recording = false;
+mic.addEventListener('click', async () => {
+  if (!recording) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+      media = new MediaRecorder(stream);
+      chunks = [];
+      media.ondataavailable = e => chunks.push(e.data);
+      media.onstop = sendAudio;
+      media.start();
+      recording = true;
+      mic.classList.add('rec');
+    } catch (err) { add('Mic error: ' + err, 'bot'); }
+  } else {
+    media.stop();
+    media.stream.getTracks().forEach(t => t.stop());
+    recording = false;
+    mic.classList.remove('rec');
+  }
+});
+
+async function sendAudio() {
+  const blob = new Blob(chunks, {type: 'audio/webm'});
+  add('(transcribing voice...)', 'you');
+  const ph = log.lastChild;
+  const fd = new FormData();
+  fd.append('audio', blob, 'audio.webm');
+  try {
+    const r = await fetch('/voice', {method:'POST', body: fd});
+    const res = await r.json();
+    ph.remove();
+    if (res.error) { add('Voice error: ' + res.error, 'bot'); return; }
+    add(res.question, 'you');
+    render(res);
+  } catch (err) { ph.remove(); add('Error: ' + err, 'bot'); }
+}
+</script>
+</body>
+</html>

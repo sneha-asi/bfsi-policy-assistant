@@ -1,0 +1,11 @@
+{
+  "name": "paperrag-web-vercel",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build-embeddings": "node build_embeddings.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "3.7.6"
+  }
+}
