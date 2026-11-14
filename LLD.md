@@ -1,6 +1,6 @@
 # Low-Level Design: BFSI Policy Assistant
 
-**Location:** `~/Documents/bfsi-rag`
+**Location:** repository root
 **Companion:** see `PRD.md` for product scope.
 
 ## 1. Architecture overview
