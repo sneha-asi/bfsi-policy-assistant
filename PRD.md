@@ -2,7 +2,6 @@
 
 **Status:** Built and verified (2026-06-28)
 **Owner:** Sneha Gupta
-**Location:** `~/Documents/bfsi-rag`
 
 ## 1. Summary
 

@@ -42,6 +42,26 @@ python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
 ./.venv/bin/python smoke_test.py    # grounded answers + abstention check
 ```
 
+## Web demo (`web-vercel/`)
+`web-vercel/` is a separate, static demo of the same assistant meant for Vercel.
+Unlike the local version above, it does **not** use Ollama or FAISS:
+- Retrieval runs in the browser (Transformers.js, `Xenova/bge-small-en-v1.5`)
+  against prebuilt passage embeddings committed in `web-vercel/site/data/`.
+- Written answers come from the **Claude API**: the serverless function
+  `web-vercel/site/api/chat.js` sends the top passages to the Anthropic Messages
+  API and asks Claude to answer only from them, with citations.
+
+Environment variables (set in the Vercel project, never commit them):
+- `ANTHROPIC_API_KEY` (required for Claude answers). Without it the site still
+  works, in extractive / in-browser mode only.
+- `ANTHROPIC_MODEL` (optional) overrides the default model set in `chat.js`.
+
+Deploy: create a Vercel project with **Root Directory** `web-vercel/site`, add
+`ANTHROPIC_API_KEY`, and deploy. To run it locally, use the Vercel CLI from
+`web-vercel/site` (`vercel dev`) so the `/api/chat` function is served.
+`web-vercel/build_embeddings.mjs` (`npm run build-embeddings` in `web-vercel/`)
+regenerates the files in `site/data/`.
+
 ## Layout
 ```
 docs/          12 BFSI policy / T&C PDFs (the static corpus)
